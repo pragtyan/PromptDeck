@@ -170,7 +170,7 @@
                 <div class="flex items-center justify-between p-4 bg-slate-900/40 rounded-[1.5rem] border border-white/5">
                     <div class="flex items-center gap-3 px-4 py-2 rounded-full bg-blue-500/10 border border-blue-500/20">
                         <i class="fas fa-microchip text-blue-400"></i>
-                        <span class="text-xs font-bold text-blue-400 uppercase tracking-widest">Enhanced Mode Active</span>
+                        <span class="text-xs font-bold text-blue-400 uppercase tracking-widest">Llama 3.1 405B Engine</span>
                     </div>
                     <button id="generate-btn" class="btn-primary px-8 py-3 rounded-xl font-bold text-sm text-white flex items-center gap-2">
                         Generate Deck <i class="fas fa-sparkles"></i>
@@ -262,6 +262,7 @@
         const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVhZ21lcGNyY3hibXJjeWxpanVoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg2NTAzMDgsImV4cCI6MjA4NDIyNjMwOH0.vD4aDENsRhIIYG4dG0O0vfcYKoqpQ1r_Lts_ethNKA8";
         const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
         const OPENROUTER_API_KEY = "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";
+        const CONTENT_MODEL = "meta-llama/llama-3.1-405b-instruct:free";
         const GEMINI_API_KEY = "AIzaSyA55MCmbqZywGMnBjfLp303wcHoswyONu8";
         
         let currentSlideIndex = 0;
@@ -368,20 +369,18 @@
          * Validates if the input is a legitimate presentation topic
          */
         async function validateTopic(topic) {
-            // Basic heuristic: check for gibberish
             const words = topic.trim().split(/\s+/);
-            const isGibberish = topic.length > 5 && words.length < 3 && !/[aeiouy]/i.test(topic);
+            const isGibberish = topic.length > 5 && words.length < 2 && !/[aeiouy]/i.test(topic);
             if (isGibberish) return { valid: false, message: "Suitable topic not detected. Please describe a clear subject." };
             
-            // LLM validation for coherence
             try {
                 const result = await fetchWithRetry('https://openrouter.ai/api/v1/chat/completions', {
                     method: 'POST',
                     headers: { 'Authorization': `Bearer ${OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },
                     body: JSON.stringify({
-                        model: 'allenai/molmo-2-8b:free',
+                        model: CONTENT_MODEL,
                         messages: [
-                            { role: 'system', content: `You are a validator. Analyze the user's input. If it is random text, gibberish, offensive, or not a topic that can be made into a presentation, reply strictly with: INVALID. Otherwise, reply: VALID.` },
+                            { role: 'system', content: `Analyze the user's input. If it is random text, gibberish, offensive, or not a topic that can be made into a presentation, reply strictly with: INVALID. Otherwise, reply: VALID. Be lenient but firm on complete gibberish.` },
                             { role: 'user', content: topic }
                         ]
                     })
@@ -392,8 +391,7 @@
                 }
                 return { valid: true };
             } catch (e) {
-                // If API fails validation, fallback to word count check
-                return { valid: words.length >= 2, message: "Please provide a more descriptive topic." };
+                return { valid: words.length >= 1, message: "Please provide a more descriptive topic." };
             }
         }
 
@@ -402,15 +400,22 @@
                 method: 'POST',
                 headers: { 'Authorization': `Bearer ${OPENROUTER_API_KEY}`, 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    model: 'allenai/molmo-2-8b:free',
+                    model: CONTENT_MODEL,
                     messages: [
-                        { role: 'system', content: `Expert presentation consultant. 5 slides. JSON array only. Each slide: title, detailedExplanation (full professional paragraph 120-160 words), imagePrompt.` },
+                        { role: 'system', content: `You are an expert presentation designer. Create a 5-slide presentation on the given topic. Output strictly as a JSON array of objects. Each object must have: 'title', 'detailedExplanation' (a professional, informative paragraph of 120-160 words), and 'imagePrompt' (a descriptive prompt for an AI image generator).` },
                         { role: 'user', content: `Topic: ${topic}` }
-                    ]
+                    ],
+                    response_format: { type: "json_object" }
                 })
             });
-            const content = result.choices[0].message.content;
-            return JSON.parse(content.match(/\[.*\]/s)?.[0] || content);
+            let content = result.choices[0].message.content;
+            // Handle common wrapper issues if model returns object instead of array
+            try {
+                const parsed = JSON.parse(content);
+                return Array.isArray(parsed) ? parsed : (parsed.slides || parsed.presentation || []);
+            } catch (e) {
+                return JSON.parse(content.match(/\[.*\]/s)?.[0] || "[]");
+            }
         }
 
         async function generateImage(prompt) {
@@ -440,7 +445,6 @@
                 return;
             }
 
-            // Step 1: Pre-check / Validation
             generateBtn.disabled = true;
             generateBtn.innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i> Validating...`;
 
@@ -453,7 +457,6 @@
                 return;
             }
 
-            // Step 2: Generation
             loaderOverlay.classList.remove('hidden');
             loaderOverlay.style.opacity = '1';
 
